@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Shahbad Kharif 2025 crop map: results dashboard</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<style>
+:root{--bg:#f6f7f9;--card:#fff;--tx:#1d2733;--mu:#5d6b7a;--bd:#e1e5ea;--ac:#1b9e77}
+@media (prefers-color-scheme:dark){:root{--bg:#12171d;--card:#1b222b;--tx:#e8edf2;--mu:#9aa7b4;--bd:#2c3642}}
+*{box-sizing:border-box}body{margin:0;font:15px/1.6 system-ui,sans-serif;background:var(--bg);color:var(--tx)}
+header{padding:28px 20px 8px;max-width:1100px;margin:auto}h1{margin:0 0 6px;font-size:26px}
+header p{margin:0;color:var(--mu);max-width:760px}
+main{max-width:1100px;margin:auto;padding:12px 20px 40px;display:grid;gap:16px;grid-template-columns:repeat(12,1fr)}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:16px;min-width:0}
+.k{grid-column:span 3}.w6{grid-column:span 6}.w12{grid-column:span 12}
+@media(max-width:800px){.k{grid-column:span 6}.w6{grid-column:span 12}}
+.kv{font-size:30px;font-weight:600;line-height:1.2}.kl{color:var(--mu);font-size:13px}
+h2{font-size:16px;margin:0 0 10px}#map{height:480px;border-radius:8px}
+table{border-collapse:collapse;width:100%;font-size:14px}th,td{padding:6px 8px;text-align:right;border-bottom:1px solid var(--bd)}
+th:first-child,td:first-child{text-align:left}.sw{display:inline-block;width:12px;height:12px;border-radius:3px;margin-right:6px;vertical-align:-1px}
+.legend{display:flex;flex-wrap:wrap;gap:12px;margin:8px 0;font-size:13px}.note{color:var(--mu);font-size:13px}
+.wrap{overflow-x:auto}canvas{max-width:100%}textarea{width:100%;height:80px}
+footer{max-width:1100px;margin:auto;padding:0 20px 30px;color:var(--mu);font-size:13px}
+</style>
+</head>
+<body>
+<header>
+<h1>Mapping crops in Shahbad, Haryana with radar</h1>
+<p>Kharif 2025 crop map made from Sentinel-1 radar (VV and VH backscatter) in 12-day windows and a Random Forest classifier. Radar sees through monsoon clouds, so it can follow crops through the whole season. Accuracy is checked on fields held out from training.</p>
+</header>
+<main>
+<div class="card k"><div class="kl">Overall accuracy (held-out)</div><div class="kv" id="k1">-</div></div>
+<div class="card k"><div class="kl">Mean over 10 spatial splits</div><div class="kv" id="k2">-</div></div>
+<div class="card k"><div class="kl">Mapped area</div><div class="kv" id="k3">-</div></div>
+<div class="card k"><div class="kl">Validation points</div><div class="kv" id="k4">-</div></div>
+
+<div class="card w12"><h2>Crop map</h2>
+<div id="map"></div>
+<div class="legend" id="legend"></div>
+<label class="note">Opacity <input type="range" id="op" min="0.2" max="1" step="0.05" value="0.85"></label>
+<div class="note" id="mapmsg"></div></div>
+
+<div class="card w6"><h2>Area by class (hectares)</h2><canvas id="areaC" height="220"></canvas></div>
+<div class="card w6"><h2>Producer's, user's accuracy and F1</h2><div class="wrap"><table id="acc"></table></div>
+<p class="note">Producer's: how much of the real class was found. User's: how much of what the map shows is correct.</p></div>
+
+<div class="card w6"><h2>Confusion matrix (rows: reference, columns: map)</h2><div class="wrap"><table id="cm"></table></div>
+<p class="note">Cell shade shows the share of each reference class.</p></div>
+<div class="card w6"><h2>Backscatter through the season</h2>
+<select id="band"><option value="VH_mean">VH (dB)</option><option value="VV_mean">VV (dB)</option></select>
+<canvas id="sigC" height="220"></canvas>
+<p class="note">Class means over the reference points. Paddy fields are flooded early, which gives a very different radar signal from other crops.</p></div>
+
+<div class="card w12"><h2>Limitations and responsible use</h2>
+<p class="note" style="font-size:14px">Reference points were hand-labelled using Sentinel-2 time series, not all verified in the field, so accuracy is indicative. Accuracy is measured on held-out spatial blocks, not a random probability sample. Areas are pixel counts and are not corrected for classification error. "Other crop" mixes several crops and is the least certain class. Do not use this map for individual-field decisions, insurance or legal claims.</p></div>
+
+<div class="card w12" id="load" hidden><h2>Load results</h2><p class="note">data/results.json was not found. Paste the JSON printed by the Earth Engine script:</p><textarea id="ta"></textarea><button id="go">Show dashboard</button></div>
+</main>
+<footer>[Your name] | M.Sc. Geoinformatics | Advanced Remote Sensing | Bharati Vidyapeeth (Deemed to be University), Pune | 2026 | Repository: [link] | Data: Copernicus Sentinel-1 and Sentinel-2 via Google Earth Engine. Basemap: &copy; OpenStreetMap, &copy; CARTO.</footer>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/georaster@1.6.0/dist/georaster.browser.bundle.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/georaster-layer-for-leaflet@4.0.1/dist/georaster-layer-for-leaflet.min.js"></script>
+<script>
+var COL=['#F6A800','#1B9E77','#7B3FE4','#D9D9D9'];
+var $=function(i){return document.getElementById(i)},pc=function(x){return (x*100).toFixed(1)+'%'};
+var map=L.map('map').setView([30.17,76.87],11),rl=null,sigChart=null;
+L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png',{attribution:'&copy; OpenStreetMap, &copy; CARTO',maxZoom:18}).addTo(map);
+L.control.scale().addTo(map);
+
+fetch('data/cropmap.tif').then(function(r){if(!r.ok)throw 0;return r.arrayBuffer()}).then(parseGeoraster).then(function(g){
+  rl=new GeoRasterLayer({georaster:g,opacity:0.85,resolution:256,pixelValuesToColorFn:function(v){var c=v[0];return c>=1&&c<=4?COL[c-1]:null}});
+  rl.addTo(map);map.fitBounds(rl.getBounds());
+}).catch(function(){$('mapmsg').textContent='data/cropmap.tif not found: export the GeoTIFF from Earth Engine and place it in the data folder.'});
+$('op').oninput=function(){if(rl)rl.setOpacity(+this.value)};
+
+function render(r){
+  var n=r.classes;
+  $('legend').innerHTML=n.map(function(c,i){return '<span><span class="sw" style="background:'+COL[i]+'"></span>'+c+'</span>'}).join('');
+  $('k1').textContent=pc(r.oa);$('k2').textContent=pc(r.oaMean)+' \u00b1 '+pc(r.oaSd);
+  var ar=[0,0,0,0];(r.areaHa||[]).forEach(function(g){ar[g['class']-1]=g.sum});
+  $('k3').textContent=Math.round(ar.reduce(function(a,b){return a+b},0)).toLocaleString()+' ha';
+  $('k4').textContent=Object.values(r.nVal||{}).reduce(function(a,b){return a+b},0);
+  new Chart($('areaC'),{type:'bar',data:{labels:n,datasets:[{data:ar.map(Math.round),backgroundColor:COL}]},options:{plugins:{legend:{display:false}},scales:{y:{title:{display:true,text:'ha'}}}}});
+  $('acc').innerHTML='<tr><th>Class</th><th>Producer\'s</th><th>User\'s</th><th>F1</th></tr>'+n.map(function(c,i){
+    return '<tr><td><span class="sw" style="background:'+COL[i]+'"></span>'+c+'</td><td>'+pc(r.pa[i])+'</td><td>'+pc(r.ua[i])+'</td><td>'+(+r.f1[i]).toFixed(2)+'</td></tr>'}).join('');
+  $('cm').innerHTML='<tr><th></th>'+n.map(function(c){return '<th>'+c+'</th>'}).join('')+'</tr>'+r.matrix.map(function(row,i){
+    var s=row.reduce(function(a,b){return a+b},0)||1;
+    return '<tr><td>'+n[i]+'</td>'+row.map(function(v,j){return '<td style="background:rgba(27,158,119,'+(v/s*0.7).toFixed(2)+');font-weight:'+(i==j?600:400)+'">'+v+'</td>'}).join('')+'</tr>'}).join('');
+  function sig(){
+    var b=$('band').value,w=[];(r.signatures||[]).forEach(function(s){if(w.indexOf(s.window)<0)w.push(s.window)});
+    w.sort(function(a,b){return a-b});
+    var lab=w.map(function(x){return ((r.signatures.filter(function(s){return s.window==x})[0]||{}).date||x).slice(5)});
+    var ds=n.map(function(c,i){return {label:c,borderColor:COL[i]==='#D9D9D9'?'#8a8a8a':COL[i],backgroundColor:COL[i],tension:.25,pointRadius:2,
+      data:w.map(function(x){var f=r.signatures.filter(function(s){return s['class']==c&&s.window==x})[0];return f?f[b]:null})}});
+    if(sigChart)sigChart.destroy();
+    sigChart=new Chart($('sigC'),{type:'line',data:{labels:lab,datasets:ds},options:{scales:{y:{title:{display:true,text:'dB'}},x:{title:{display:true,text:'Window start (MM-DD, 2025)'}}}}});
+  }
+  $('band').onchange=sig;sig();$('load').hidden=true;
+}
+fetch('data/results.json').then(function(r){if(!r.ok)throw 0;return r.json()}).then(render).catch(function(){$('load').hidden=false});
+$('go').onclick=function(){try{render(JSON.parse($('ta').value))}catch(e){alert('That is not valid JSON')}};
+</script>
+</body>
+</html>
